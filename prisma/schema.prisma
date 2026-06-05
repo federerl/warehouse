@@ -11,3 +11,55 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+/// Top-level catalog category (one per source spreadsheet tab).
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String // "Bolts", "Camloc"
+  slug        String    @unique // "bolts", "camloc"
+  description String?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+
+  @@index([sortOrder])
+}
+
+/// A single inventory part. Flat/denormalized for fast filtering + simple CRUD.
+model Product {
+  id String @id @default(cuid()) // surrogate PK -> safe /product/[id] URLs
+
+  sourceSheet String // provenance: source tab name
+  location    String? // col 0 ("SR", "1-1A")
+
+  partNumber       String // col 1 — Part # (Primary)
+  otherPartNumber  String? // col 2 — Other part #
+  otherPartNumber2 String? // col 3 — Other part #
+
+  category     Category @relation(fields: [categoryId], references: [id])
+  categoryId   Int
+  categorySlug String // denormalized for join-free WHERE
+  selection1   String // Sel1 (col 4) e.g. "Bolt"
+  type         String? // Sel2 (col 5) e.g. "Eye Bolt"
+  series       String? // Sel3 (col 6) e.g. "AN42"
+
+  pcPrice         Decimal? @db.Decimal(10, 4) // col 7 — per-piece price
+  packQuantity    String? // col 8 — raw ("25", "1/8 LB")
+  packQuantityNum Int? // parsed leading integer when numeric
+  packPrice       Decimal? @db.Decimal(10, 4) // col 9 — pack price
+
+  quantity     Int? // col 10 — current stock
+  warnQuantity Int? // col 11 — reorder threshold
+
+  hasImage    Boolean @default(false) // col 12 flag (stored, not rendered yet)
+  description String? // col 13
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categorySlug])
+  @@index([categorySlug, type])
+  @@index([categorySlug, type, series])
+  @@index([partNumber])
+}
