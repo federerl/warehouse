@@ -7,8 +7,9 @@ import { resolveDirectDatabaseUrl } from "@/lib/pg-url";
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 function createPrismaClient() {
-  // Prisma 7 + the local `prisma dev` server requires a direct TCP connection
-  // via a driver adapter (the Accelerate HTTP protocol isn't supported here).
+  // Prisma 7 connects through a driver adapter. `resolveDirectDatabaseUrl()`
+  // returns DATABASE_URL as-is for a plain postgres:// URL (and still decodes a
+  // legacy prisma+postgres:// URL, if one is ever set, for backward compat).
   const adapter = new PrismaPg({ connectionString: resolveDirectDatabaseUrl() });
   return new PrismaClient({
     adapter,

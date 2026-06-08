@@ -12,6 +12,8 @@ export default defineConfig({
   // Prisma 7: connection URL lives here for CLI/Migrate (not in schema.prisma).
   // The runtime PrismaClient is given the same URL via `accelerateUrl` (see lib/db.ts),
   // since DATABASE_URL uses the prisma+postgres:// (Accelerate) protocol.
+  // Plain Postgres URL — Prisma Migrate creates/drops its own shadow database
+  // automatically (the `warehouse` role has CREATEDB), so no shadowDatabaseUrl needed.
   datasource: {
     url: process.env["DATABASE_URL"],
   },

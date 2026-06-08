@@ -15,39 +15,36 @@ CRUD layer can be added later without rework.
 ## 1. The database system
 
 ### What it is
-The app uses **Prisma 7** as the ORM against a **local Prisma Postgres dev server**
-— a real Postgres instance that Prisma runs on your machine. It is started with
-`npx prisma dev` and **must be running** for the database (and therefore the app)
-to work.
+The app uses **Prisma 7** as the ORM against a **plain local PostgreSQL** instance
+(localhost:5432). Each developer runs their own Postgres and a dedicated project
+database/role:
 
-`.env` holds a `DATABASE_URL` that looks like:
-
-```
-DATABASE_URL="prisma+postgres://localhost:51213/?api_key=…"
+```sql
+CREATE USER warehouse WITH PASSWORD 'warehouse' CREATEDB;  -- CREATEDB lets Migrate make its shadow DB
+CREATE DATABASE warehouse OWNER warehouse;
 ```
 
-That `prisma+postgres://` URL is a **proxy** on port `51213`. Embedded in its
-`api_key` (non-secret, for local dev) is the **real TCP Postgres connection**:
+`.env` then holds a standard direct connection string:
 
 ```
-postgres://postgres:postgres@localhost:51217/template1   (database lives here)
+DATABASE_URL="postgresql://warehouse:warehouse@localhost:5432/warehouse?schema=public"
 ```
 
-So there are two ways in: the proxy (`51213`) and the direct TCP port (`51217`).
+> A plain `postgres://` URL is what makes real migrations, Studio, and psql all
+> work with no proxy, no extra ports, and no `sslmode` workarounds. (An earlier
+> iteration used the `npx prisma dev` proxy server; its `prisma+postgres://` URL
+> broke `prisma migrate` and is kept commented-out in `.env` for reference only.)
 
 ### How the app connects (Prisma 7 specifics)
-Prisma 7 changed how connections work, which drove a few non-obvious choices:
-
 - **The connection URL is NOT in `schema.prisma`.** Prisma 7 forbids `url` in the
   datasource block. The URL lives in `prisma.config.ts` for CLI commands
-  (migrate/push/studio), loaded from `.env` via `import "dotenv/config"`.
-- **The runtime client uses a driver adapter over a direct TCP connection.** This
-  local server doesn't support the Accelerate HTTP protocol with client 7.8, so
-  the app connects with **`@prisma/adapter-pg` + `pg`** using the *direct* URL.
-  `lib/pg-url.ts` decodes that direct URL out of the `api_key`, so it keeps
-  working even if `prisma dev` restarts on different ports.
-- **Schema sync uses `prisma db push`, not `migrate dev`** (the migrate flow hits a
-  proxy connection error, `P1017`). There is no formal migration history yet.
+  (migrate/studio), loaded from `.env` via `import "dotenv/config"`.
+- **The runtime client uses the `@prisma/adapter-pg` driver adapter** (Prisma 7's
+  connection model). `lib/pg-url.ts` passes a plain `postgres://` URL straight
+  through (it also still decodes a legacy `prisma+postgres://` URL if one is set).
+- **Schema sync uses real migrations** — `prisma migrate dev` to create them and
+  `prisma migrate deploy` to apply them. History lives in `prisma/migrations/`
+  (baselined as `0_init`).
 
 ### The schema (`prisma/schema.prisma`)
 Two tables — a thin category lookup plus a flat, denormalized product table
@@ -113,69 +110,63 @@ query string; server components re-query Postgres. Minimal client JS.
 
 ## 3. Running the app
 
-Two terminals:
+Postgres runs as a background service (it starts with your machine), so day to
+day you just run the site:
 
 ```bash
-# Terminal 1 — start the local Postgres (leave running)
-npx prisma dev
-
-# Terminal 2 — run the site
 npm run dev          # http://localhost:3000
 ```
 
-First-time / after schema changes:
+First-time setup (after creating the `warehouse` role + database — see §1):
 
 ```bash
-npx prisma db push   # sync schema to the database
+npm run db:deploy    # apply migrations  (prisma migrate deploy)
 npm run seed         # import inventory.xlsx  (or: npx prisma db seed)
 ```
 
-> `npm run build` prerenders the home page, so the database (Terminal 1) must be
-> running during a build.
+When you change `schema.prisma`, create a migration instead of pushing:
+
+```bash
+npm run db:migrate   # prisma migrate dev — generates + applies a new migration
+```
+
+> `npm run build` prerenders the home page, so Postgres must be running during a
+> build (it normally is, as a service).
 
 ---
 
 ## 4. How to check the Postgres database
 
-**`npx prisma dev` must be running first** for any of these.
-
 ### Option A — Prisma Studio (easiest, GUI in the browser)
 ```bash
-npx prisma studio
+npm run db:studio    # or: npx prisma studio
 ```
 Opens a table browser (usually http://localhost:5555) where you can view/edit
 `Category` and `Product` rows, filter, and sort.
 
-### Option B — any SQL client / `psql` (direct connection)
-Connect to the **direct TCP** port with these credentials:
+### Option B — any SQL client / `psql`
+Connect with the project credentials:
 
 | Field | Value |
 |-------|-------|
 | Host | `localhost` |
-| Port | `51217` |
-| User | `postgres` |
-| Password | `postgres` |
-| Database | `template1` |
+| Port | `5432` |
+| User | `warehouse` |
+| Password | `warehouse` |
+| Database | `warehouse` |
 
 ```bash
-psql "postgres://postgres:postgres@localhost:51217/template1?sslmode=disable"
+psql "postgresql://warehouse:warehouse@localhost:5432/warehouse"
 ```
 Then, for example:
 ```sql
 \dt                                            -- list tables
-SELECT COUNT(*) FROM "Product";                -- ~1872
+SELECT COUNT(*) FROM "Product";                -- 1872
 SELECT name, slug FROM "Category" ORDER BY "sortOrder";
 SELECT "partNumber","type","pcPrice","quantity"
   FROM "Product" WHERE "categorySlug" = 'bolts' LIMIT 10;
 ```
 Works the same in GUI tools (DBeaver, TablePlus, pgAdmin) using the fields above.
-
-> The exact port may change if `prisma dev` is restarted. To re-read the current
-> direct URL, decode it from `.env`:
-> ```bash
-> node -e "const u=new URL(process.env.DATABASE_URL);const k=u.searchParams.get('api_key');console.log(JSON.parse(Buffer.from(k,'base64')).databaseUrl)"
-> ```
-> (or just read the connection strings `npx prisma dev` prints on startup.)
 
 ### Option C — quick one-off query script
 Create a throwaway `prisma/check.ts` that imports the client the same way
@@ -185,7 +176,7 @@ Create a throwaway `prisma/check.ts` that imports the client the same way
 
 ## 5. Known caveats / future work
 - **Soft 404s:** `notFound()` renders the correct "not found" page but currently returns HTTP 200 (not 404) in this Next 16 setup.
-- **No migration history** yet — schema is applied with `db push`. Formalizing `prisma/migrations` is a follow-up.
+- **Migrations** live in `prisma/migrations/` (`0_init` baseline). Use `npm run db:migrate` for schema changes; teammates/CI apply with `npm run db:deploy`.
 - **No caching directives** (`'use cache'`) yet — added alongside the future admin write path so `revalidateTag` can invalidate reads.
 - **Admin CRUD** is out of scope for now; the architecture reserves `/admin` + Server Actions for it.
 - **No product images** (by design) — the catalog is table-only; `hasImage` is stored for future use.
